@@ -1,0 +1,108 @@
+#!/bin/ksh -e
+##:
+#h: Usage: pf-blacklist -v (verbose) -i (install rules)
+#h:
+#h: Download IP blacklist files from the internet, update pf tables
+#h: with pfctl(8) and add the rules to pf.conf(5). The following
+#h: blacklists are used.
+#h:
+#h:     1. https://github.com/stamparm/ipsum
+#h:
+#h: To update this list daily, put the following in /etc/crontab(5):
+#h:
+#h:     30 02 * * * root -n /usr/local/bin/pf-blacklist
+#h:     @reboot     root -n /usr/local/bin/pf-blacklist
+#h:
+#h: You can add additional blacklists to "/var/run/iplist/black". You
+#h: can add the needed rules to pf.conf(5) with -i.
+##:
+pf_blacklist() {
+    local OPTIND optopt rule VERBOSE opt_i=
+    
+    ## Parse command line arguments.
+    while getopts "Vvi" optopt; do
+        case $optopt in
+            V)  pf_blacklist_show_variables; return 0;;
+            v)  VERBOSE=y;;
+            i)  opt_i=y;;
+            \?) return 1;;
+        esac
+    done
+    shift $(( $OPTIND - 1 ))
+    
+    ##
+    pf_blacklist_download
+    if test -n "$opt_i"; then
+        pf_blacklist_update_pf_ruleset
+    fi
+    pf_blacklist_update_pf_tables
+    
+    ##
+    return 0
+}
+pf_blacklist_show_variables() {
+    echo "IPLISTS_BLACK : ${IPLISTS_BLACK}"
+    echo "IPLISTS_TEMP  : ${IPLISTS_TEMP}"
+}
+pf_blacklist_calc_variables() {
+    if test ! @"$(uname -s)" = @"OpenBSD"; then
+        echo >&2 "pf-blacklist: error: Only OpenBSD is supported."
+        return 1
+    fi
+    IPLISTS_BLACK="${IPLISTS_BLACK:-/var/iplists/black}"
+    IPLISTS_TEMP="${IPLISTS_TEMP:-/var/iplists/temp}"
+}
+## -------------------------------------------------------------------
+pf_blacklist_download() {
+    local u1='https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt'
+    
+    mkdir -p "$IPLISTS_BLACK" "$IPLISTS_TEMP"
+
+    vlog "Downloading $IPLISTS_BLACK/ipsum ..."
+    if ftp -o "$IPLISTS_TEMP/ipsum" "$u1"; then
+        sed '/^\#/d;s|[	 ].*||' "$IPLISTS_TEMP/ipsum" > "$IPLISTS_BLACK/ipsum"
+    fi
+}
+pf_blacklist_list_block_files() {
+    test ! -d "$IPLISTS_BLACK" || find "$IPLISTS_BLACK" -type f -not -name '*~'
+}
+pf_blacklist_update_pf_tables() {
+    local tf t
+    for tf in $(pf_blacklist_list_block_files); do
+        t="$(basename "$tf")"
+        vlog "Updating $t pf table ..."
+        pfctl -t "black-$t" -T flush
+        pfctl -t "black-$t" -T add -f "$tf"
+    done
+    pfctl -f /etc/pf.conf
+}
+pf_blacklist_print_pf_ruleset() {
+    local i 
+    echo "set limit table-entries 300000"
+    for i in $(pf_blacklist_list_block_files); do
+        printf 'table <black-%s>\n' "$(basename $i)"
+        printf 'block from <black-%s> to any\n' "$(basename $i)"
+    done
+}
+pf_blacklist_update_pf_ruleset() {
+    local update=
+    pf_blacklist_print_pf_ruleset | while read -r rule; do
+        if ! grep -q "$rule" /etc/pf.conf; then
+            vlog "Adding to /etc/pf.conf: $rule"
+            echo "$rule" >> /etc/pf.conf
+        fi
+    done
+    pfctl -f /etc/pf.conf    
+}
+## -------------------------------------------------------------------
+vlog() {
+    test ! -n "$VERBOSE" || echo "$*"
+}
+## -------------------------------------------------------------------
+pf_blacklist_calc_variables
+if test @"${SCRNAME:-$(basename "$0")}" = @"pf-blacklist"; then
+    case "${1}" in
+        -h|--help) sed -n 's/^ *#h: \{0,1\}//p' "$0";;
+        *)         pf_blacklist "$@"; exit 0;;
+    esac
+fi
