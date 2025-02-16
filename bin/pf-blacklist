@@ -17,7 +17,7 @@
 #h: can add the needed rules to pf.conf(5) with -i.
 ##:
 pf_blacklist() {
-    local OPTIND optopt rule VERBOSE opt_i=
+    local OPTIND=1 optopt rule VERBOSE opt_i=
     
     ## Parse command line arguments.
     while getopts "Vvi" optopt; do
